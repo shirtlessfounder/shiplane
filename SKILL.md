@@ -1,96 +1,144 @@
 ---
 name: shiplane
-description: Helps an AI agent ship a product on GitHub + exe.dev + Supabase + Vercel. Reads locally-stored auth credentials and follows opinionated playbooks for the full lifecycle (branch → PR → migrate → deploy).
+description: Helps an AI agent ship a product across a pluggable set of cloud services (GitHub, exe.dev, Supabase, Vercel, AWS, Cloudflare, Resend, OpenAI, Linear, and any service module the user drops in). Collects auth lazily per-service on first use and follows opinionated playbooks for each platform.
 ---
 
 # shiplane
 
-You are an AI agent working inside a `shiplane` skill. The user has installed shiplane
-to give you a consistent way to operate across four services:
+You are an AI agent working inside a `shiplane` skill. The user has installed
+shiplane to give you a consistent way to operate across a pluggable set of
+cloud services without them having to re-explain the stack each session.
 
-- **GitHub** — source of truth, PR flow, issue tracking
-- **exe.dev** — long-running server processes (node/python/etc), systemd, auto-HTTPS
-- **Supabase** — managed Postgres (with optional session pooler for LISTEN/NOTIFY)
-- **Vercel** — Next.js frontend hosting + serverless routes
+## Default services shipped with shiplane
+
+| service | purpose |
+|---|---|
+| **github** | source of truth, PRs, issues, CI |
+| **exe** | long-running server VMs (systemd, SSE, websockets, cron) |
+| **supabase** | managed Postgres + auth + realtime |
+| **vercel** | Next.js frontend hosting + serverless routes |
+| **aws** | S3, Lambda, RDS, CloudFront — reach for when you outgrow the native stack |
+| **cloudflare** | Workers, R2, Pages, DNS |
+| **resend** | transactional email |
+| **openai** | direct OpenAI API (when not routing through a proxy) |
+| **linear** | issue tracking |
+
+Each service lives as a plugin under `scripts/services/<name>.sh`. The user
+(or another agent) can drop new plugins in the same dir and they'll be
+auto-discovered — no core changes required.
+
+## Onboarding: lazy + agent-driven
+
+Onboarding is NOT a separate step the user runs. You run it inline, only when
+a service is actually needed. Flow:
+
+1. User asks for an operation that needs a service (e.g. "deploy this to
+   vercel").
+2. You check that service's auth state first:
+
+    ```bash
+    bash ~/.claude/skills/shiplane/scripts/check-auth.sh <name>
+    ```
+
+3. If it exits non-zero, run the service's onboarding inline in the
+   terminal so the user can complete browser logins / paste tokens:
+
+    ```bash
+    bash ~/.claude/skills/shiplane/scripts/services/<name>.sh
+    ```
+
+4. Once authed, proceed with the original operation.
+
+Do NOT run a bulk `scripts/onboard.sh` for every service up front — that's
+only for users who explicitly ask "onboard everything".
 
 ## Where credentials live
 
-All auth lives at `~/.config/shiplane/credentials.json` (mode `0600`). Schema:
+All metadata + secrets (for services without native CLIs) are stored at
+`~/.config/shiplane/credentials.json` (mode `0600`). Native CLIs like `gh`,
+`vercel`, `wrangler`, and `aws` also cache their own auth in their usual
+locations (`~/.config/gh/`, `~/.local/share/com.vercel.cli/`, `~/.aws/`,
+etc) — shiplane does not duplicate those.
+
+Example shape (only populated for services the user has onboarded):
 
 ```json
 {
-  "github": {
-    "token": "ghp_...",
-    "username": "shirtlessfounder"
-  },
-  "exe": {
-    "ssh_key_path": "~/.ssh/id_shiplane_exe",
-    "ssh_pubkey": "ssh-ed25519 AAAA... shiplane",
-    "default_host": "innies-api.exe.xyz"
-  },
-  "supabase": {
-    "access_token": "sbp_...",
-    "default_project_ref": "rcxokzsblffykipiljqv"
-  },
-  "vercel": {
-    "token": "vercel_xxx...",
-    "default_team": "shirtlessfounder"
-  }
+  "github":    { "token": "ghp_...", "username": "shirtlessfounder" },
+  "exe":       { "ssh_key_path": "~/.ssh/id_shiplane_exe", "default_host": "innies-api.exe.xyz" },
+  "supabase":  { "access_token": "sbp_...", "default_project_ref": "rcx..." },
+  "vercel":    { "token": "vercel_xxx...", "default_team": "shirtlessfounder" },
+  "aws":       { "default_region": "us-east-1", "default_profile": "default" },
+  "cloudflare":{ "api_token": "...", "default_account_id": "..." },
+  "resend":    { "api_token": "re_..." },
+  "openai":    { "api_token": "sk-..." },
+  "linear":    { "api_token": "lin_api_..." }
 }
 ```
 
-Read it with `jq` when you need a specific value:
+Read a value with `jq`:
 
 ```bash
-GH_TOKEN=$(jq -r .github.token ~/.config/shiplane/credentials.json)
+jq -r .aws.default_region ~/.config/shiplane/credentials.json
 ```
 
-Never echo these tokens in full. Prefer letting the service CLIs (`gh`, `supabase`,
-`vercel`, `ssh`) pick them up from their own auth state. Shiplane's onboarding script
-runs each service's native `login` command, so 99% of the time you can just call
-`gh pr create` / `supabase db push` / `vercel deploy` / `ssh <host> ...` without
-explicitly passing a token.
-
-If `~/.config/shiplane/credentials.json` doesn't exist, tell the user to run
-`~/.claude/skills/shiplane/scripts/onboard.sh` first. Don't try to proceed without it.
+Never echo full tokens. When operating on a service, prefer letting its
+native CLI pick up its own cached auth; only reach into `credentials.json`
+when you need something a CLI can't provide (e.g. an API token for direct
+curl calls).
 
 ## Playbooks (read on demand)
 
-Each playbook is a deep-dive for one operation. Read the specific one you need —
-don't preload them all.
+Each playbook is a deep-dive for one operation. Read only the ones you
+currently need — don't preload all of them.
 
-- [playbooks/github-pr-flow.md](playbooks/github-pr-flow.md) — branch → PR → squash merge conventions
-- [playbooks/deploy-to-exe.md](playbooks/deploy-to-exe.md) — ship a node process to an exe.dev VM with systemd + share auto-HTTPS
-- [playbooks/supabase-migrations.md](playbooks/supabase-migrations.md) — safe migration patterns, pooler gotchas (:5432 vs :6543), `sslmode=no-verify`
-- [playbooks/vercel-deploy.md](playbooks/vercel-deploy.md) — env vars, serverless timeout gotchas, NEXT_PUBLIC_ scope
-- [playbooks/prod-from-scratch.md](playbooks/prod-from-scratch.md) — end-to-end from empty → deployed product
+- [playbooks/github-pr-flow.md](playbooks/github-pr-flow.md)
+- [playbooks/deploy-to-exe.md](playbooks/deploy-to-exe.md)
+- [playbooks/supabase-migrations.md](playbooks/supabase-migrations.md)
+- [playbooks/vercel-deploy.md](playbooks/vercel-deploy.md)
+- [playbooks/aws.md](playbooks/aws.md)
+- [playbooks/cloudflare.md](playbooks/cloudflare.md)
+- [playbooks/resend.md](playbooks/resend.md)
+- [playbooks/prod-from-scratch.md](playbooks/prod-from-scratch.md) — end-to-end walkthrough
 
 ## Templates (copy when scaffolding)
 
-- [templates/prod.env.example](templates/prod.env.example) — standard env shape for an exe.dev node service
-- [templates/migration.sql](templates/migration.sql) — guarded-insert pattern for idempotent seeds
-- [templates/systemd-service.template](templates/systemd-service.template) — systemd unit for `tsx src/server.ts`
-- [templates/gitignore.template](templates/gitignore.template) — standard .gitignore for a node+supabase+vercel repo
+- [templates/prod.env.example](templates/prod.env.example)
+- [templates/migration.sql](templates/migration.sql)
+- [templates/systemd-service.template](templates/systemd-service.template)
+- [templates/gitignore.template](templates/gitignore.template)
 
-## Core conventions to follow
+## Core conventions
 
-These opinions are baked in — diverge only when the user asks.
+1. **One PR = one squash-merged commit.** Branch off `main`, open PR, squash, delete branch.
+2. **Migrations are numbered + idempotent.** `docs/migrations/NNN_name.sql` with guarded INSERTs; pair with `_no_extensions.sql` for superuser-less envs.
+3. **Server-side env vars stay server-side.** Only `NEXT_PUBLIC_*` reaches the browser.
+4. **exe.dev for long-running, Vercel for edges.** Anything needing SSE, websockets, LISTEN/NOTIFY, cron, or >10s requests → exe.dev. Stateless Next.js → Vercel.
+5. **Supabase URLs need `?sslmode=no-verify`** for pg-node (self-signed chain from pg's perspective).
+6. **Session pooler (`:5432`) for LISTEN/NOTIFY**; transaction pooler (`:6543`) for everything else.
+7. **Reach for AWS / Cloudflare only when you outgrow the native stack.** Supabase + Vercel + exe.dev cover most needs until you need raw S3-style object storage, edge compute worldwide, or beefy EC2.
 
-1. **One PR = one squash-merged commit.** Branch off `main`, open PR, squash merge, delete branch. Never push directly to `main`.
-2. **Migrations are numbered + idempotent.** `docs/migrations/NNN_description.sql` with guarded INSERTs (`insert ... where not exists`). Pair every file with a `_no_extensions.sql` variant if you use it in environments without superuser.
-3. **Server-side env vars stay server-side.** Only `NEXT_PUBLIC_*` reaches the browser. Admin keys, DB URLs, seller tokens go in non-prefixed vars.
-4. **exe.dev for long-running, Vercel for edges.** Anything needing SSE, websockets, LISTEN/NOTIFY, cron, or >10s request times goes to exe.dev. Stateless Next.js routes + static pages go to Vercel.
-5. **Supabase URLs need `?sslmode=no-verify`** for pg-node — Supabase's TLS chain is self-signed from pg-node's perspective.
-6. **Session pooler (:5432) for LISTEN/NOTIFY**; transaction pooler (:6543) for everything else. The transaction pooler drops the connection between queries so realtime won't work on it.
+## Extending shiplane
 
-## Health check
+Users can add new services without waiting for a shiplane release. Pattern:
 
-If something's off, run `~/.claude/skills/shiplane/scripts/check-auth.sh` — it
-validates each stored credential against the live service and prints which are
-stale. Re-run onboarding if any have expired.
+```bash
+# scripts/services/<new-service>.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/creds.sh"
 
-## What this skill is NOT
+shiplane_service_<new-service>_status() { ...; }
+shiplane_service_<new-service>_onboard() { ...; }
 
-- Not a deployment tool — you still run the real service CLIs (`gh`, `supabase`, `vercel`, `ssh`). Shiplane just makes sure they're authed + gives you opinionated playbooks.
-- Not a project generator — onboarding does not create new repos / projects / VMs. The user creates those manually (or asks you to, using the playbooks). This avoids shiplane accidentally spawning infrastructure users didn't expect.
-- Not a secret manager — credentials are stored plain-JSON at `0600`. Good enough for single-user dev machines. Don't use shiplane on shared/multi-user systems.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  shiplane_service_<new-service>_onboard
+fi
+```
+
+Drop the file in `scripts/services/`, make it executable (`chmod +x`), and it
+auto-appears in `onboard.sh --list` / `check-auth.sh --list`.
+
+## What shiplane is NOT
+
+- Not a deployment tool — you still run the real CLIs (`gh`, `supabase`, `vercel`, `wrangler`, `aws`, `ssh`).
+- Not a project generator — onboarding does NOT create new repos/projects/VMs. The user creates those.
+- Not a secret manager — plain-JSON storage at `0600`. Single-user dev machines only; don't use on shared systems.
