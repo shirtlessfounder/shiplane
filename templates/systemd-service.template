@@ -1,0 +1,32 @@
+# Template for /etc/systemd/system/<app>.service on the exe.dev VM.
+# Replace <APP>, <REPO>, and the User if needed.
+# After saving:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable <APP>
+#   sudo systemctl start <APP>
+#   sudo systemctl status <APP>
+
+[Unit]
+Description=<APP>
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/<REPO>/api
+EnvironmentFile=/etc/<APP>/prod.env
+ExecStart=/opt/<REPO>/api/node_modules/.bin/tsx src/server.ts
+
+Restart=always
+RestartSec=3
+
+# Run as the default ubuntu user rather than root. If the process needs
+# to bind to :80 / :443, use `share port` to front the :3000 process
+# instead of binding privileged ports directly.
+User=ubuntu
+
+# StandardOutput/Error go to journald by default; view with `journalctl -u <APP>`.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

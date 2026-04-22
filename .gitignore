@@ -1,0 +1,20 @@
+# local-only
+.DS_Store
+*.swp
+*.swo
+
+# never commit credentials — shiplane stores these at
+# ~/.config/shiplane/credentials.json, but this is a belt-and-suspenders
+# guard in case someone copies one into the repo by mistake.
+credentials.json
+*.pem
+*.key
+.env
+.env.local
+.env.*.local
+
+# node (for any scripts that might grow deps)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
